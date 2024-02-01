@@ -1,0 +1,24 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Fill in the credentials to connect to Helixer",
+                "data": {
+                    "username": "Username",
+                    "password": "Password",
+                    "endpoint": "Endpoint",
+                    "port": "Port",
+                    "certificate": "Certificate",
+                    "key": "Key",
+                    "ca": "CA"
+
+                }
+            }
+        },
+        "error": {
+            "auth": "Could not authenticate Helixer.",
+            "connection": "Unable to connect to Helixer.",
+            "unknown": "Unknown error occurred."
+        }
+    }
+}
