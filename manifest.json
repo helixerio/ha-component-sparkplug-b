@@ -1,12 +1,8 @@
 {
   "domain": "helixer",
   "name": "Helixer Sparkplug B",
-  "codeowners": [
-    "@bassiebal"
-  ],
-  "dependencies": [
-    "mqtt"
-  ],
+  "config_flow": true,
+  "codeowners": ["@bassiebal"],
   "iot_class": "local_push",
   "version": "0.0.1"
 }
