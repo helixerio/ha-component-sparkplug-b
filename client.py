@@ -1,4 +1,3 @@
-"""Helixe Client."""
 import paho.mqtt.client as mqtt
 import socket
 from .const import LOGGER
@@ -35,12 +34,28 @@ class HelixerClient:
         self._mqtt_broker = mqtt_broker
         self._mqtt_port = mqtt_port
         self._key = key
-        self._key_tmp = tempfile.NamedTemporaryFile()
         self._cert = cert
-        self._cert_tmp = tempfile.NamedTemporaryFile()
         self._ca = ca
-        self._ca_tmp = tempfile.NamedTemporaryFile()
-        self._mqtt_client = mqtt.Client()
+        self._mqtt_client = mqtt.Client(
+            protocol=mqtt.MQTTv5, transport="tcp", reconnect_on_failure=True
+        )
+
+        self.store_certs()
+
+        self._mqtt_client.on_connect = on_connect
+        self._mqtt_client.on_disconnect = on_disconnect
+
+        self._mqtt_client.username_pw_set(f"{self._username}", f"{self._password}")
+        self._mqtt_client.tls_set(
+            ca_certs=self._ca_tmp.name,
+            certfile=self._cert_tmp.name,
+            keyfile=self._key_tmp.name,
+        )
+
+    def store_certs(self):
+        self._key_tmp = tempfile.NamedTemporaryFile(delete=False)
+        self._cert_tmp = tempfile.NamedTemporaryFile(delete=False)
+        self._ca_tmp = tempfile.NamedTemporaryFile(delete=False)
 
         self._key_tmp.write(str.encode(self._key))
         self._key_tmp.seek(0)
@@ -54,25 +69,15 @@ class HelixerClient:
     def connect_mqtt(self):
         """Connect to the MQTT broker."""
         LOGGER.debug(
-            "Connecting to MQTT broker %s:%s", self._mqtt_broker, self._mqtt_port
+            "Connecting to MQTT broker %s:%s",
+            self._mqtt_broker,
+            self._mqtt_port,
         )
-        try:
-            if self._username and self._password:
-                LOGGER.debug("Authenticating to MQTT broker as %s", self._username)
-                self._mqtt_client.username_pw_set(self._username, self._password)
-            if self._key and self._cert:
-                LOGGER.debug(
-                    "Using client certificate and key stored in %s and %s",
-                    self._cert_tmp.name,
-                    self._key_tmp.name,
-                )
-                self._mqtt_client.tls_set(
-                    ca_certs=self._ca_tmp.name,
-                    certfile=self._cert_tmp.name,
-                    keyfile=self._key_tmp.name,
-                )
 
+        try:
+            LOGGER.debug("Authenticating to MQTT broker as %s ", self._username)
             self._mqtt_client.connect(self._mqtt_broker, self._mqtt_port)
+
         except socket.error as exception:
             LOGGER.error(
                 "Could not connect to MQTT broker %s:%s reason: %s",
@@ -83,13 +88,14 @@ class HelixerClient:
             raise HelixerClientConnectionError(
                 "Could not connect to MQTT broker"
             ) from exception
-        except Exception as exception:  # pylint: disable=broad-except
+        except Exception as exception:
             LOGGER.warning(exception)
             raise HelixerClientError("Could not connect to MQTT broker") from exception
-        else:
-            LOGGER.debug(
-                "Connected to MQTT broker %s:%s", self._mqtt_broker, self._mqtt_port
-            )
+
+        LOGGER.debug("Starting MQTT loop")
+        self._mqtt_client.loop_start()
+
+        LOGGER.debug(self._mqtt_client.is_connected())
 
     def disconnect_mqtt(self):
         """Disconnect from the MQTT broker."""
@@ -97,16 +103,23 @@ class HelixerClient:
             "Disconnecting from MQTT broker %s:%s", self._mqtt_broker, self._mqtt_port
         )
         if self._mqtt_client:
+            self._mqtt_client.loop_stop()
             self._mqtt_client.disconnect()
 
     def publish(self, topic: str, payload):
         """Publish a message to a topic."""
-
-        if not self._mqtt_client:
-            raise HelixerClientConnectionError("Not connected to MQTT broker")
-
         LOGGER.debug("Publishing %s to topic %s", payload, topic)
-        self._mqtt_client.publish(topic=topic, payload=payload.SerializeToString())
+
+        try:
+            self._mqtt_client.publish(topic=topic, payload=payload.SerializeToString())
+        except socket.error as exception:
+            LOGGER.error("Could not publish to topic %s reason: %s", topic, exception)
+            raise HelixerClientConnectionError(
+                "Could not publish to topic"
+            ) from exception
+        except Exception as exception:  # pylint: disable=broad-except
+            LOGGER.warning(exception)
+            raise HelixerClientError("Could not publish to topic") from exception
 
     def __del__(self):
         """Destructor to clean up resources."""
@@ -115,3 +128,11 @@ class HelixerClient:
         self._key_tmp.close()
         self._cert_tmp.close()
         self._ca_tmp.close()
+
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    LOGGER.debug("Connected with result code " + str(reason_code))
+
+
+def on_disconnect(client, userdata, flags, reason_code):
+    LOGGER.debug("Disconnected with result code " + str(reason_code))

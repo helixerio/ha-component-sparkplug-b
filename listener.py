@@ -86,8 +86,11 @@ class HelixerListener:
             metric.int_value = value
         elif type(value) is float:
             metric.float_value = value
-        else:
+        elif type(value) is str:
             metric.string_value = value
+        else:
+            LOGGER.warning(f"Unsupported type {type(value)} for value {value}")
+            metric.string_value = str(value)
 
         metric.timestamp = int(timestamp * 1000)
 
@@ -101,12 +104,14 @@ class HelixerListener:
         elif value.replace(".", "", 1).isdigit():
             metric.float_value = float(value)
         else:
-            metric.string_value = f'"{str(value)}"'
+            metric.string_value = str(value)
 
         metric.timestamp = int(timestamp * 1000)
 
     @callback
     def ha_started(self, ha: HomeAssistant) -> None:
+        LOGGER.info("Starting Helixer listener")
+
         @callback
         def _event_filter(evt: Event) -> bool:
             entity_id: str = evt.data["entity_id"]
@@ -120,7 +125,8 @@ class HelixerListener:
         )
 
         @callback
-        def _ha_stopping(self, _: Event) -> None:
+        def _ha_stopping(self) -> None:
+            LOGGER.info("Stopping Helixer listener")
             callback_handler()
 
         ha.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _ha_stopping)
