@@ -1,8 +1,0 @@
-{
-  "domain": "helixer",
-  "name": "Helixer Sparkplug B",
-  "config_flow": true,
-  "codeowners": ["@bassiebal"],
-  "iot_class": "local_push",
-  "version": "0.0.1"
-}

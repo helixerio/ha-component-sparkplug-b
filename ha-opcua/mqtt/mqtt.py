@@ -1,20 +1,73 @@
+import asyncio
+import json
+import logging
+import queue
+import threading
+import time
+from contextlib import suppress
+from datetime import datetime
+
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import Event, State, callback
+
+from ..config.const import (
+    DOMAIN,
+)
 from . import sparkplugb_pb2
-from .client import HelixerClient
-from homeassistant.const import EVENT_HOMEASSISTANT_STOP, EVENT_STATE_CHANGED
-from homeassistant.core import Event, HomeAssistant, State, callback
-from .const import LOGGER
+from .client import MQTTClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
-class HelixerListener:
+class MQTTThread(threading.Thread):
     def __init__(
         self,
-        client: HelixerClient,
+        hass,
+        client: MQTTClient,
         base_topic: str,
     ) -> None:
+        threading.Thread.__init__(self, name=DOMAIN)
         self._client = client
         self._base_topic = base_topic
+        self.queue: queue.SimpleQueue[threading.Event | Event | None] = (
+            queue.SimpleQueue()
+        )
+        self.hass = hass
+        self.shutdown = False
 
-    async def _state_publisher(self, evt: Event) -> None:
+        self.hass.loop.create_task(self.connect_client())
+
+    async def connect_client(self):
+        while True:
+            await asyncio.sleep(5)
+            code = self._client.connect_mqtt()
+            self._client.loop()
+            if code == 0:
+                _LOGGER.info("Connected to MQTT broker")
+                self.hass.async_create_task(self._client.run_client())
+                self.hass.bus.async_listen(EVENT_STATE_CHANGED, self._event_listener)
+                break
+            else:
+                _LOGGER.error(f"Failed to connect to MQTT broker with code {code}")
+
+    @callback
+    def _event_listener(self, event):
+        """Listen for new messages on the bus and queue them for OPC."""
+        item = (time.monotonic(), event)
+        if item is None:
+            self.shutdown = True
+        elif type(item) is tuple:
+            _, event = item
+            self.queue.put(event)
+        else:
+            _LOGGER.error("Unknown item in queue: %s", type(item))
+
+    def write_to_mqtt(self):
+        with suppress(queue.Empty):
+            event = self.queue.get(timeout=None)
+            self.state_publisher(event)
+
+    def state_publisher(self, evt: Event) -> None:
         entity_id: str = evt.data["entity_id"]
         new: State = evt.data["new_state"]
 
@@ -80,22 +133,31 @@ class HelixerListener:
             self._client.publish(topic, payload)
 
     def add_metric_value(self, metric, value, timestamp):
-        if type(value) is bool:
-            metric.boolean_value = value
-        elif type(value) is int:
-            metric.int_value = value
-        elif type(value) is float:
-            metric.float_value = value
-        elif type(value) is str:
+        if isinstance(value, str):
             metric.string_value = value
+            if value.lower() in ["true", "false"]:
+                metric.boolean_value = bool(value)
+        elif isinstance(value, int):
+            metric.int_value = value
+        elif isinstance(value, float):
+            metric.float_value = value
+        elif isinstance(value, bool):
+            metric.boolean_value = value
+        elif isinstance(value, list):
+            if len(value) > 0:
+                metric.string_value = json.dumps(value)
+        elif isinstance(value, dict):
+            if len(value) > 0:
+                metric.string_value = json.dumps(value)
+        elif isinstance(value, datetime):
+            metric.string_value = value.isoformat()
         else:
-            LOGGER.warning(f"Unsupported type {type(value)} for value {value}")
-            metric.string_value = str(value)
+            _LOGGER.warning(f"Unsupported type {type(value)} for value {value}")
 
         metric.timestamp = int(timestamp * 1000)
 
     def cast_value(self, metric, value: str, timestamp) -> str | int | float | bool:
-        LOGGER.debug(f"Cast value {value} to {type(value)}")
+        _LOGGER.debug(f"Cast value {value} to {type(value)}")
 
         if value.lower() in ["true", "false"]:
             metric.bool_value = bool(value)
@@ -104,29 +166,14 @@ class HelixerListener:
         elif value.replace(".", "", 1).isdigit():
             metric.float_value = float(value)
         else:
-            metric.string_value = str(value)
+            metric.string_value = value
 
         metric.timestamp = int(timestamp * 1000)
 
-    @callback
-    def ha_started(self, ha: HomeAssistant) -> None:
-        LOGGER.info("Starting Helixer listener")
+    def run(self):
+        """Process incoming events."""
+        while not self.shutdown:
+            self.write_to_mqtt()
 
-        @callback
-        def _event_filter(evt: Event) -> bool:
-            entity_id: str = evt.data["entity_id"]
-            new_state: State | None = evt.data["new_state"]
-            if new_state is None:
-                return False
-            return True
-
-        callback_handler = ha.bus.async_listen(
-            EVENT_STATE_CHANGED, self._state_publisher, _event_filter
-        )
-
-        @callback
-        def _ha_stopping(self) -> None:
-            LOGGER.info("Stopping Helixer listener")
-            callback_handler()
-
-        ha.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _ha_stopping)
+        self._client.disconnect_mqtt()
+        self._client.close()

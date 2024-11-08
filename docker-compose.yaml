@@ -1,0 +1,30 @@
+services:
+  homeassistant:
+    container_name: homeassistant
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    volumes:
+      - homeassistant-conf:/config
+      - ./ha-opcua:/config/custom_components/ha_opcua
+      - ./edgeos:/config/custom_components/edgeos
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro
+    restart: unless-stopped
+    privileged: true
+    ports:
+      - "8123:8123"
+      - "4840:4840"
+
+  hass-configurator:
+    image: "causticlab/hass-configurator-docker:latest"
+    restart: unless-stopped
+    ports:
+      - "3218:3218/tcp"
+    volumes:
+      - hass-configurator-conf:/config
+      - homeassistant-conf:/hass-config
+
+volumes:
+  homeassistant-conf:
+    external: false
+  hass-configurator-conf:
+    external: false
