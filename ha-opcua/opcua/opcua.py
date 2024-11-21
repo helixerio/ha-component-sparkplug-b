@@ -16,12 +16,12 @@ from homeassistant.const import (
     EVENT_STATE_CHANGED,
 )
 from homeassistant.core import Event, State, callback
-from homeassistant.helpers import state as state_helper
 
 from ..config.const import (
     CONF_OPCUA_ENDPOINT,
     CONF_OPCUA_NAMESPACE,
     DOMAIN,
+    EVENT_ENTITY_ID,
     EVENT_NEW_STATE,
 )
 
@@ -97,78 +97,78 @@ class OPCThread(threading.Thread):
                 return None
 
             state: State | None = event.data.get(EVENT_NEW_STATE)
+            entity_id: str = event.data.get(EVENT_ENTITY_ID)
+
             if state is None:
                 return None
 
-            _state_as_value = None
-            try:
-                _state_as_value = float(state.state)
-            except ValueError:
-                try:
-                    _state_as_value = float(state_helper.state_as_number(state))
-                except ValueError:
-                    pass
-
-            if _state_as_value:
-                self.write_opc_value(state.object_id, "value", _state_as_value)
+            self.write_opc_value(entity_id, "state", self.convert_state(state.state))
 
             for key, value in state.attributes.items():
-                self.write_opc_value(state.object_id, key, value)
+                if isinstance(value, dict):
+                    for k, v in value.items():
+                        self.write_opc_value(entity_id, f"{key} {k}", v)
+                else:
+                    self.write_opc_value(entity_id, key, value)
 
-    def write_opc_value(self, entity_id, key: str, value: Any):
+    def write_opc_value(self, entity_id, key: str, raw_value: Any):
         """Set the value of a variable in the OPCUA server."""
 
-        if isinstance(value, str):
-            value = ua.String(value)
-        elif isinstance(value, int):
-            value = ua.Int32(value)
-        elif isinstance(value, float):
-            value = ua.Float(value)
-        elif isinstance(value, bool):
-            value = ua.Boolean(value)
-        elif isinstance(value, list):
-            value = ua.Variant()
-        elif isinstance(value, datetime):
-            value = ua.DateTime(value)
-        elif value is None:
-            value = ua.Null()
-        else:
-            _LOGGER.error("Unknown value type %s", type(value))
+        value = self.cast_value(raw_value)
+        if value is None:
             return
 
-        entity = self.get_entity_opc_object(entity_id, key)
+        entity = self.get_entity_opc_object(entity_id)
 
-        if key not in entity["properties"]:
+        parsed_entity_id = entity_id.replace("_", " ").strip()
+        parsed_key = key.replace("_", " ").strip()
+
+        if parsed_key not in entity["properties"]:
+            if raw_value is None:
+                return
+
             opc_property = asyncio.run_coroutine_threadsafe(
-                self.opcua.objects[entity_id]["folder"].add_variable(
-                    self.opcua.namespace_idx, key, value
+                self.opcua.objects[parsed_entity_id]["folder"].add_variable(
+                    ua.NodeId(f"{entity_id}_{key}", self.opcua.namespace_idx),
+                    parsed_key,
+                    value,
                 ),
                 loop=self.hass.loop,
             ).result()
 
-            self.opcua.objects[entity_id]["properties"][key] = opc_property
+            self.opcua.objects[parsed_entity_id]["properties"][parsed_key] = (
+                opc_property
+            )
             return
 
-        opc_property = entity["properties"][key]
-        asyncio.run_coroutine_threadsafe(
-            opc_property.write_value(value), loop=self.hass.loop
-        ).result()
+        opc_property = entity["properties"][parsed_key]
 
-    def get_entity_opc_object(self, entity_id: str, key: str):
-        if entity_id not in self.opcua.objects:
+        try:
+            asyncio.run_coroutine_threadsafe(
+                opc_property.write_value(value), loop=self.hass.loop
+            ).result()
+        except Exception as e:
+            _LOGGER.error(
+                f"Error writing value {raw_value} for {parsed_entity_id} {parsed_key} to OPCUA: {e}"
+            )
+
+    def get_entity_opc_object(self, entity_id: str):
+        parsed_entity_id = entity_id.replace("_", " ").strip()
+
+        if parsed_entity_id not in self.opcua.objects:
             opc_object = asyncio.run_coroutine_threadsafe(
-                self.opcua.server.nodes.objects.add_object(
-                    self.opcua.namespace_idx, entity_id
+                self.opcua.server.nodes.objects.add_folder(
+                    ua.NodeId(entity_id, self.opcua.namespace_idx), parsed_entity_id
                 ),
                 loop=self.hass.loop,
             ).result()
 
-            self.opcua.objects[entity_id] = {
+            self.opcua.objects[parsed_entity_id] = {
                 "folder": opc_object,
                 "properties": {},
             }
 
-        return self.opcua.objects[entity_id]
+        return self.opcua.objects[parsed_entity_id]
 
     def run(self):
         """Process incoming events."""
@@ -176,3 +176,41 @@ class OPCThread(threading.Thread):
             self.write_to_opcua()
 
         self.opcua.close()
+
+    def convert_state(self, value: str):
+        """Convert the state to a value."""
+        try:
+            return int(value)
+        except ValueError:
+            pass
+
+        try:
+            return float(value)
+        except ValueError:
+            pass
+
+        if value.lower() in ["true", "false"]:
+            return bool(value)
+
+        return value
+
+    def cast_value(self, value):
+        if isinstance(value, str):
+            value = ua.String(value)
+        elif isinstance(value, int):
+            value = ua.Int64(value)
+        elif isinstance(value, float):
+            value = ua.Float(value)
+        elif isinstance(value, bool):
+            value = ua.Boolean(value)
+        elif isinstance(value, list):
+            value = ua.Variant()
+        elif isinstance(value, datetime):
+            value = ua.String(value.isoformat())
+        elif value is None:
+            value = ua.Null()
+        else:
+            _LOGGER.error("Unknown value type %s", type(value))
+            value = ua.Null()
+
+        return value

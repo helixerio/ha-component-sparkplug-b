@@ -27,6 +27,7 @@ RETRY_DELAY = 20
 RETRY_MESSAGE = f"%s Retrying in {RETRY_INTERVAL} seconds."
 
 EVENT_NEW_STATE = "new_state"
+EVENT_ENTITY_ID = "entity_id"
 
 COMPONENT_CONFIG_SCHEMA_CONNECTION = {
     vol.Optional(CONF_OPCUA_ENDPOINT, default=DEFAULT_ENDPOINT): cv.string,

@@ -93,7 +93,7 @@ class MQTTThread(threading.Thread):
         if new_state != old_state:
             metric = payload.metrics.add()
             metric.name = "state"
-            self.cast_value(metric, new_state, timestamp)
+            self.add_metric_value(metric, self.convert_state(new_state), timestamp)
 
         attributes_to_send = {}
 
@@ -123,52 +123,72 @@ class MQTTThread(threading.Thread):
                     metric = payload.metrics.add()
                     metric.name = f"attributes/{attribute}.{i}"
                     self.add_metric_value(metric, item, timestamp)
+
             else:
                 metric = payload.metrics.add()
                 metric.name = f"attributes/{attribute}"
                 self.add_metric_value(metric, attributes_to_send[attribute], timestamp)
 
+        for metric in payload.metrics:
+            if not metric.timestamp:
+                payload.metrics.remove(metric)
+
         if payload.metrics.__len__() > 0:
             topic = f"spBv1.0/homeassistant/DDATA/{self._base_topic}/{entity_id.replace('.', '/')}"
             self._client.publish(topic, payload)
 
-    def add_metric_value(self, metric, value, timestamp):
-        if isinstance(value, str):
-            metric.string_value = value
-            if value.lower() in ["true", "false"]:
-                metric.boolean_value = bool(value)
-        elif isinstance(value, int):
-            metric.int_value = value
-        elif isinstance(value, float):
-            metric.float_value = value
-        elif isinstance(value, bool):
-            metric.boolean_value = value
-        elif isinstance(value, list):
-            if len(value) > 0:
-                metric.string_value = json.dumps(value)
-        elif isinstance(value, dict):
-            if len(value) > 0:
-                metric.string_value = json.dumps(value)
-        elif isinstance(value, datetime):
-            metric.string_value = value.isoformat()
-        else:
-            _LOGGER.warning(f"Unsupported type {type(value)} for value {value}")
+    def convert_state(self, value: str):
+        """Convert the state to a value."""
+        try:
+            return int(value)
+        except ValueError:
+            pass
 
-        metric.timestamp = int(timestamp * 1000)
-
-    def cast_value(self, metric, value: str, timestamp) -> str | int | float | bool:
-        _LOGGER.debug(f"Cast value {value} to {type(value)}")
+        try:
+            return float(value)
+        except ValueError:
+            pass
 
         if value.lower() in ["true", "false"]:
-            metric.bool_value = bool(value)
-        elif value.isdigit():
-            metric.int_value = int(value)
-        elif value.replace(".", "", 1).isdigit():
-            metric.float_value = float(value)
+            return bool(value)
+
+        return value
+
+    def add_metric_value(self, metric, value, timestamp):
+        if isinstance(value, bool):
+            metric.boolean_value = value
+            metric.datatype = sparkplugb_pb2.DataType.Boolean
+        elif isinstance(value, int):
+            metric.long_value = value
+            metric.datatype = sparkplugb_pb2.DataType.UInt64
+        elif isinstance(value, float):
+            metric.float_value = value
+            metric.datatype = sparkplugb_pb2.DataType.Float
+        elif isinstance(value, list):
+            metric.string_value = json.dumps(value)
+            metric.datatype = sparkplugb_pb2.DataType.String
+        elif isinstance(value, dict):
+            metric.string_value = json.dumps(value)
+            metric.datatype = sparkplugb_pb2.DataType.String
+        elif isinstance(value, datetime):
+            metric.string_value = value.isoformat()
+            metric.datatype = sparkplugb_pb2.DataType.String
+        elif isinstance(value, str):
+            if value.lower() in ["true", "false"]:
+                metric.boolean_value = bool(value)
+                metric.datatype = sparkplugb_pb2.DataType.Boolean
+            else:
+                metric.string_value = value
+                metric.datatype = sparkplugb_pb2.DataType.String
+        elif value is None:
+            metric.is_null = True
         else:
-            metric.string_value = value
+            _LOGGER.warning(f"Unsupported type {type(value)} for value {value}")
+            metric.is_null = True
 
         metric.timestamp = int(timestamp * 1000)
+
+        return True
 
     def run(self):
         """Process incoming events."""
